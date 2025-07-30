@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Immersive Garden Fluid Reveal</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+      background: #fff;
+    }
+    #container {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      position: fixed;
+      top: 0; left: 0;
+    }
+    .content {
+      position: absolute;
+      z-index: 2;
+      color: #fff;
+      font-family: 'Montserrat', sans-serif;
+      text-align: center;
+      width: 100vw;
+      top: 20vh;
+      pointer-events: none;
+      user-select: none;
+      text-shadow: 0 2px 8px #000;
+    }
+  </style>
+</head>
+<body>
+  <div id="container"></div>
+  <div class="content">
+    <h1>Immersive Garden Fluid Reveal</h1>
+    <p>Touch or move your mouse to interact!</p>
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.2.4/pixi.min.js"></script>
+  <script>
+    const app = new PIXI.Application({
+      width: window.innerWidth,
+      height: window.innerHeight,
+      resizeTo: window,
+      backgroundColor: 0xffffff
+    });
+    document.getElementById('container').appendChild(app.view);
+
+    // Load images
+    const bgTexture = PIXI.Texture.from('zenstudy.jpg'); // your image
+    const dispTexture = PIXI.Texture.from('https://i.imgur.com/2yYayZk.png'); // cloud-like
+
+    // Create background sprite
+    const bg = new PIXI.Sprite(bgTexture);
+    bg.width = app.screen.width;
+    bg.height = app.screen.height;
+    app.stage.addChild(bg);
+
+    // Displacement sprite for water effect
+    const displacementSprite = new PIXI.Sprite(dispTexture);
+    displacementSprite.texture.baseTexture.wrapMode = PIXI.WRAP_MODES.REPEAT;
+    displacementSprite.width = 350;
+    displacementSprite.height = 350;
+    displacementSprite.anchor.set(0.5);
+    displacementSprite.alpha = 0;
+    app.stage.addChild(displacementSprite);
+
+    // Displacement filter
+    const displacementFilter = new PIXI.filters.DisplacementFilter(displacementSprite, 80);
+
+    // Custom reveal shader (mask)
+    const fragment = `
+      precision mediump float;
+      varying vec2 vTextureCoord;
+      uniform sampler2D uSampler;
+      uniform vec2 uPointer;
+      uniform float uRadius;
+      uniform float uTime;
+      uniform float uAspect;
+      uniform float uReveal;
+      uniform float uMaxOpacity;
+      uniform vec3 uWhiteShade;
+      uniform float uRippleAmp;
+
+      float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453123);
+      }
+      float noise(vec2 p){
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        float a = hash(i);
+        float b = hash(i + vec2(1.0, 0.0));
+        float c = hash(i + vec2(0.0, 1.0));
+        float d = hash(i + vec2(1.0, 1.0));
+        vec2 u = f*f*(3.0-2.0*f);
+        return mix(a, b, u.x) +
+               (c - a)* u.y * (1.0 - u.x) +
+               (d - b) * u.x * u.y;
+      }
+
+      void main(void) {
+        vec2 uv = vTextureCoord;
+        vec2 pointer = uPointer;
+        vec2 diff = uv - pointer;
+        diff.x *= uAspect;
+        float dist = length(diff);
+
+        // Ripple amplitude increases with uRippleAmp (for haptic feel)
+        float n = noise(uv * 10.0 + uTime * 0.3) * 0.22;
+        float ripple = uRippleAmp * sin(24.0 * dist - uTime * 2.0);
+        float edge = uRadius + ripple + n;
+
+        float t = smoothstep(0.0, edge, dist);
+        float opacity = mix(0.0, uMaxOpacity, t);
+        opacity = mix(uMaxOpacity, opacity, uReveal);
+
+        vec4 color = texture2D(uSampler, uv);
+        vec4 whiteShade = vec4(uWhiteShade, 1.0);
+        gl_FragColor = mix(color, whiteShade, opacity);
+      }
+    `;
+
+    // Use a premium white shade, e.g. #f5f6fa = rgb(245,246,250)
+    const whiteShade = [245/255, 246/255, 250/255];
+
+    const revealFilter = new PIXI.Filter(undefined, fragment, {
+      uPointer: [0.5, 0.5],
+      uRadius: 0.22,
+      uTime: 0.0,
+      uAspect: app.screen.width / app.screen.height,
+      uReveal: 0.0,
+      uMaxOpacity: 0.8,
+      uWhiteShade: whiteShade,
+      uRippleAmp: 0.06 // default ripple
+    });
+
+    bg.filters = [displacementFilter, revealFilter];
+
+    // Animate displacement
+    app.ticker.add((delta) => {
+      displacementSprite.x += 1.2;
+      displacementSprite.y += 0.8;
+      revealFilter.uniforms.uTime += delta / 60;
+    });
+
+    // Fluid inertia logic (springy, squishy)
+    let pointer = { x: 0.5, y: 0.5 };
+    let targetPointer = { x: 0.5, y: 0.5 };
+    let velocity = { x: 0, y: 0 };
+    let reveal = 0.0;
+    let targetReveal = 0.0;
+
+    function revealAt(x, y) {
+      targetPointer.x = x / app.screen.width;
+      targetPointer.y = y / app.screen.height;
+      targetReveal = 1.0;
+      displacementSprite.x = x;
+      displacementSprite.y = y;
+    }
+
+    function hideReveal() {
+      targetReveal = 0.0;
+    }
+
+    // Mouse
+    app.stage.interactive = true;
+    app.stage.on('pointermove', e => {
+      revealAt(e.data.global.x, e.data.global.y);
+    });
+    app.stage.on('pointerdown', e => {
+      revealAt(e.data.global.x, e.data.global.y);
+    });
+    app.stage.on('pointerup', hideReveal);
+    app.stage.on('pointerupoutside', hideReveal);
+    app.stage.on('pointerout', hideReveal);
+
+    // Touch
+    app.view.addEventListener('touchmove', e => {
+      if (e.touches && e.touches.length) {
+        revealAt(e.touches[0].clientX, e.touches[0].clientY);
+      }
+    }, { passive: false });
+    app.view.addEventListener('touchstart', e => {
+      if (e.touches && e.touches.length) {
+        revealAt(e.touches[0].clientX, e.touches[0].clientY);
+      }
+    }, { passive: false });
+    app.view.addEventListener('touchend', hideReveal, { passive: false });
+    app.view.addEventListener('touchcancel', hideReveal, { passive: false });
+
+    // Animate reveal fade and fluid inertia (springy)
+    app.ticker.add(() => {
+      // Spring physics for pointer (squishy, bouncy)
+      const stiffness = 0.12; // lower = more "liquid"
+      const damping = 0.72;   // lower = more bouncy
+      let fx = (targetPointer.x - pointer.x) * stiffness;
+      let fy = (targetPointer.y - pointer.y) * stiffness;
+      velocity.x = (velocity.x + fx) * damping;
+      velocity.y = (velocity.y + fy) * damping;
+      pointer.x += velocity.x;
+      pointer.y += velocity.y;
+
+      // Ripple increases with velocity (haptic visual)
+      let speed = Math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y);
+      let rippleAmp = 0.06 + Math.min(speed * 2.5, 0.18);
+      revealFilter.uniforms.uRippleAmp = rippleAmp;
+
+      // Slow fade
+      reveal += (targetReveal - reveal) * 0.01;
+
+      revealFilter.uniforms.uPointer = [pointer.x, pointer.y];
+      revealFilter.uniforms.uAspect = app.screen.width / app.screen.height;
+      revealFilter.uniforms.uReveal = reveal;
+    });
+
+    // Responsive
+    window.addEventListener('resize', () => {
+      bg.width = app.screen.width;
+      bg.height = app.screen.height;
+      revealFilter.uniforms.uAspect = app.screen.width / app.screen.height;
+    });
+  </script>
+</body>
+</html>
